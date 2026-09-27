@@ -80,6 +80,63 @@ let toastTimer = null;
 let posterBlob = null;
 let posterObjectUrl = null;
 let posterSignature = "";
+const imageCache = new Map();
+
+function preloadImage(source) {
+  if (imageCache.has(source)) return imageCache.get(source);
+
+  const request = new Promise((resolve) => {
+    const image = new Image();
+    image.decoding = "async";
+    image.onload = async () => {
+      try {
+        await image.decode?.();
+      } catch {
+        // A loaded image is still usable when explicit decoding is unavailable.
+      }
+      resolve(image);
+    };
+    image.onerror = () => resolve(null);
+    image.src = source;
+  });
+
+  imageCache.set(source, request);
+  return request;
+}
+
+async function warmImageCache() {
+  const sources = CPS.map((item) => item.image);
+  let cursor = 0;
+
+  async function worker() {
+    while (cursor < sources.length) {
+      const source = sources[cursor];
+      cursor += 1;
+      await preloadImage(source);
+    }
+  }
+
+  await Promise.all(Array.from({ length: 5 }, () => worker()));
+}
+
+function scheduleImagePreload() {
+  const start = () => void warmImageCache();
+  if ("requestIdleCallback" in window) {
+    window.requestIdleCallback(start, { timeout: 700 });
+  } else {
+    window.setTimeout(start, 80);
+  }
+}
+
+function preloadUpcomingPair() {
+  const engine = session?.engine;
+  if (!engine) return;
+
+  for (const id of engine.round.slice(engine.cursor, engine.cursor + 2)) {
+    const item = cpById.get(id);
+    if (item) void preloadImage(item.image);
+  }
+}
 
 function shuffle(items) {
   const result = [...items];
@@ -305,7 +362,7 @@ function chooseCard(winnerId, cardElement) {
       elements.rightCard.disabled = false;
       isChoosing = false;
     }
-  }, 170);
+  }, 90);
 }
 
 function undoChoice() {
@@ -367,6 +424,10 @@ function renderGame() {
   const right = cpById.get(rightId);
   const leftNumber = CPS.findIndex((item) => item.id === leftId) + 1;
   const rightNumber = CPS.findIndex((item) => item.id === rightId) + 1;
+
+  void preloadImage(left.image);
+  void preloadImage(right.image);
+  preloadUpcomingPair();
 
   elements.leftImage.src = left.image;
   elements.leftImage.alt = `${left.name}，${left.pair}合照`;
@@ -855,10 +916,8 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
-for (const item of CPS.slice(0, 8)) {
-  const image = new Image();
-  image.src = item.image;
-}
+if (document.readyState === "complete") scheduleImagePreload();
+else window.addEventListener("load", scheduleImagePreload, { once: true });
 
 registerWebMcpTools();
 renderStart();
